@@ -1,10 +1,8 @@
 # Start the server
 > runReload
-$ sleep 2000
-$ exists target/server-started.txt
+> waitForFile
 
-# Simulate a restart (source didn't change but we can just re-invoke)
+# Simulate a restart
 $ delete target/server-started.txt
 > runReload
-$ sleep 2000
-$ exists target/server-started.txt
+> waitForFile
