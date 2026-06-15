@@ -1,0 +1,4 @@
+# Start the app via Test/runReload, then check the marker file exists
+> Test/runReload
+$ sleep 2000
+$ exists target/test-marker.txt
