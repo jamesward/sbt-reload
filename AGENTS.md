@@ -88,6 +88,56 @@ generated jar bytes are identical to what's already at the destination,
 the file's mtime won't update even though the publish "succeeded". Don't
 use mtime alone to confirm a fresh build; check the contents.
 
+## Other notes
+
+- `enablePlugins(SbtPlugin)` in the root `build.sbt` is what makes the
+  `scripted` task available. Don't remove it.
+- `inConfig(Compile)(reloadSettings) ++ inConfig(Test)(reloadSettings)`
+  registers `runReload` in both configs. Each ends up with its own
+  ScopedKey (config axis differs), so per-scope stop logic naturally
+  treats `Compile/runReload` and `Test/runReload` as independent jobs.
+- `Def.uncached(runReloadTask.value)` opts out of sbt 2.x action caching
+  for `runReload` — necessary because the side effect (a long-running
+  fork) is not a cacheable artifact.
+
+## Per-project independent restart (skip-when-unchanged)
+
+`runReload` keeps a per-scope fingerprint of its inputs in a
+plugin-internal `ConcurrentHashMap[ScopedKey[?], Vector[String]]`. On
+each invocation the task:
+
+1. Builds a fingerprint from the current `fullClasspathAsJars`,
+   `run / mainClass`, and `runReloadArgs`.
+2. Checks `service.jobs.exists(_.spawningTask == thisScope)` to see if
+   a fork is still alive.
+3. If both are true (running fork + fingerprint matches the last
+   recorded value) it logs at debug and returns without stopping or
+   restarting. Otherwise it stops the prior job (if any), starts a new
+   fork, and records the new fingerprint.
+
+The fingerprint is cleared per-scope on `watchOnTermination` and
+globally on `onUnload`. This is what makes aggregated `~Test/runReload`
+restart only the project whose sources actually changed: the others'
+classpaths come back identical and they take the no-op path.
+
+### **GOTCHA: VirtualFileRef.toString is the path, not the content hash**
+
+`HashedVirtualFileRef extends VirtualFileRef`. `VirtualFileRef.toString`
+(from `BasicVirtualFileRef`) returns just `id` — the encoded path. It
+does **not** include the content hash. Two different builds of the same
+source file produce the same `toString`.
+
+To get a content-aware fingerprint, call `.contentHashStr()` on the
+`HashedVirtualFileRef` directly:
+
+```scala
+val fingerprint =
+  classpath.map(_.data.contentHashStr).toVector
+```
+
+Symptom of using `toString`: `runReload` always takes the skip path even
+after a real source change, so the fork doesn't pick up new code.
+
 ## Verifying liveness in scripted tests
 
 Use a PID-based liveness check rather than shutdown hooks (which may not
@@ -106,14 +156,29 @@ fire under `Process.destroyForcibly`).
   (set by the default `run / forkOptions`), so `target/pid.txt` resolves
   per-project even in multi-project builds.
 
-## Other notes
+### **GOTCHA: action cache memoizes test tasks across calls**
 
-- `enablePlugins(SbtPlugin)` in the root `build.sbt` is what makes the
-  `scripted` task available. Don't remove it.
-- `inConfig(Compile)(reloadSettings) ++ inConfig(Test)(reloadSettings)`
-  registers `runReload` in both configs. Each ends up with its own
-  ScopedKey (config axis differs), so per-scope stop logic naturally
-  treats `Compile/runReload` and `Test/runReload` as independent jobs.
-- `Def.uncached(runReloadTask.value)` opts out of sbt 2.x action caching
-  for `runReload` — necessary because the side effect (a long-running
-  fork) is not a cacheable artifact.
+sbt 2.x runs every task through `ActionCache`. If a custom task's
+declared inputs (`.value` calls) don't change between two invocations in
+the same session, the cache returns the previous result and **the task
+body never runs again**. This bites scripted tests that depend on side
+effects: a `waitForStarted` task that polls the filesystem will silently
+not poll the second time, even though the file state has changed.
+
+Fix: wrap the body in `Def.uncached`:
+
+```scala
+waitForStarted := Def.uncached {
+  // body runs every time the task is invoked
+  ...
+}
+```
+
+Apply this to every helper task in a scripted build that:
+- has side effects (file IO, sleep, mutation),
+- depends on filesystem state that isn't an explicit `.value` input, or
+- is expected to re-run on every `>` invocation in the test script.
+
+Symptom: a task is invoked multiple times in the test script but only
+logs from the first call appear; later assertions fail with stale state
+(e.g., FileNotFoundException for a file written between calls).

@@ -1,0 +1,22 @@
+# Start runReload in both subprojects, capture each one's PID.
+> a/runReload
+> b/runReload
+> a/waitForStarted
+> b/waitForStarted
+> a/recordPid
+> b/recordPid
+
+# Modify only project a's source so the next compile produces new bytecode.
+> a/touchSource
+
+# Re-run runReload on both. With per-scope input fingerprinting, only a
+# should restart (its classpath fingerprint changed); b should keep its
+# existing fork because nothing it depends on changed.
+$ delete a/target/pid.txt
+> a/runReload
+> b/runReload
+> a/waitForStarted
+> b/waitForStarted
+
+> a/assertPidChanged
+> b/assertPidUnchanged
