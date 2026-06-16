@@ -18,7 +18,8 @@ object ReloadPlugin extends AutoPlugin:
   override lazy val globalSettings: Seq[Setting[?]] = Seq(
     runReloadArgs := Nil,
     onUnload := { s =>
-      stopReloadJobs(Project.extract(s).get(bgJobService))
+      // On unload, stop every runReload job across all projects.
+      stopAllReloadJobs(Project.extract(s).get(bgJobService))
       onUnload.value(s)
     },
   )
@@ -29,9 +30,13 @@ object ReloadPlugin extends AutoPlugin:
 
   private lazy val reloadSettings: Seq[Setting[?]] = Seq(
     runReload := Def.uncached(runReloadTask.value),
-    runReload / watchOnTermination := { (action, cmd, count, state) =>
-      stopReloadJobs(Project.extract(state).get(bgJobService))
-      state
+    runReload / watchOnTermination := {
+      // Capture this scope's runReload ScopedKey at setting-init time so the
+      // termination handler only stops the job spawned by THIS runReload.
+      val rs = (runReload / Keys.resolvedScoped).value
+      (action, cmd, count, state) =>
+        stopReloadJobsFor(Project.extract(state).get(bgJobService), rs)
+        state
     },
   )
 
@@ -40,14 +45,15 @@ object ReloadPlugin extends AutoPlugin:
     val log = streams.value.log
     val converter = fileConverter.value
     val st = state.value
+    val rs = Keys.resolvedScoped.value
 
     // Compile first (via classpath dependencies). If compile fails,
     // this task aborts and the running fork keeps going.
     val products = exportedProductJars.value
     val classpath = fullClasspathAsJars.value
 
-    // Stop prior runReload jobs
-    stopReloadJobs(service, log)
+    // Stop only this scope's prior runReload job.
+    stopReloadJobsFor(service, rs, log)
 
     val mainClass = (run / Keys.mainClass).value.getOrElse(
       sys.error("runReload: no main class detected. Set run/mainClass.")
@@ -58,7 +64,7 @@ object ReloadPlugin extends AutoPlugin:
 
     log.info(s"runReload: starting $mainClass")
 
-    service.runInBackground(Keys.resolvedScoped.value, st) {
+    service.runInBackground(rs, st) {
       (logger, workingDir) =>
         val cp =
           if copyCp then service.copyClasspath(products, classpath, workingDir, converter)
@@ -70,16 +76,28 @@ object ReloadPlugin extends AutoPlugin:
     ()
   }
 
-  private def stopReloadJobs(service: BackgroundJobService, log: Logger): Unit =
-    val label = runReload.key.label
-    service.jobs.filter(_.spawningTask.key.label == label).foreach { h =>
+  /** Stop only jobs whose `spawningTask` equals the given ScopedKey. */
+  private def stopReloadJobsFor(
+      service: BackgroundJobService,
+      key: ScopedKey[?],
+      log: Logger,
+  ): Unit =
+    service.jobs.filter(_.spawningTask == key).foreach { h =>
       log.info(s"runReload: stopping job ${h.id}")
       service.stop(h)
       service.waitForTry(h)
       ()
     }
 
-  private def stopReloadJobs(service: BackgroundJobService): Unit =
+  private def stopReloadJobsFor(service: BackgroundJobService, key: ScopedKey[?]): Unit =
+    service.jobs.filter(_.spawningTask == key).foreach { h =>
+      service.stop(h)
+      service.waitForTry(h)
+      ()
+    }
+
+  /** Stop every runReload job across the build (used on unload). */
+  private def stopAllReloadJobs(service: BackgroundJobService): Unit =
     val label = runReload.key.label
     service.jobs.filter(_.spawningTask.key.label == label).foreach { h =>
       service.stop(h)

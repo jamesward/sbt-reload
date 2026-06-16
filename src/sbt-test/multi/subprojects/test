@@ -1,0 +1,14 @@
+# Start runReload in subproject a, wait for the app to come up
+> a/runReload
+> a/waitForStarted
+
+# Start runReload in subproject b
+# BUG: stopReloadJobs filters jobs only by task label "runReload",
+# so this also stops a's job (every project's runReload shares the
+# same label in the global BackgroundJobService).
+> b/runReload
+> b/waitForStarted
+
+# Both apps should still be alive — fails today because a was killed.
+> a/checkAlive
+> b/checkAlive
