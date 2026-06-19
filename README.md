@@ -64,33 +64,23 @@ single `reloadOutput: no new output` line — not one line per running fork. Thi
 keeps a streaming `~reloadOutput` quiet (it only prints real output) while still
 giving a manual one-shot poll a single confirmation that there was nothing new.
 
-To follow the output continuously, run it under sbt's watch:
-
-```
-./sbt ~reloadOutput        # stream Compile-scoped runReload output
-./sbt ~Test/reloadOutput   # stream Test-scoped runReload output
-```
-
-`~reloadOutput` re-runs `reloadOutput` every time the capture file changes
-(it is declared as the task's `fileInputs`), so new output is printed as the
-app emits it — a read-only tail. Press Enter to exit.
-
-> **Do not run `~reloadOutput` at the same time as `~runReload` on the same sbt
-> server.** sbt has a limitation where two concurrent continuous (`~`) builds on
-> one server share a single file-watch repository, and after the first triggered
-> rebuild one of the two watch sessions stops receiving further file-change
-> events (the session that was started *first* is the one that goes deaf). This
-> is **not** specific to this plugin — it reproduces with two plain `~compile`
-> sessions and no plugin involved — but the `~runReload` + `~reloadOutput`
-> combination is a natural way to hit it, and the casualty is usually
-> `~runReload` (started first), which silently stops restarting on edits.
+> **Do not run `~reloadOutput`.** Use the one-shot `reloadOutput` (poll it
+> after triggering a rebuild); do not run it under sbt's watch.
 >
-> The intended pattern for "watch + observe from another client" avoids this
-> entirely: run **one** `~runReload` watch, and from the other client **poll the
-> one-shot `reloadOutput`** (it is a non-blocking poll by design — see above)
-> instead of `~reloadOutput`. A single `~` session restarts reliably on every
-> change, and each one-shot `reloadOutput` call returns whatever the app has
-> emitted since the last poll.
+> sbt has a limitation where two concurrent continuous (`~`) builds on one
+> server share a single file-watch repository, and after the first triggered
+> rebuild one of the two watch sessions stops receiving further file-change
+> events (the session started *first* goes deaf). This is **not** specific to
+> this plugin — it reproduces with two plain `~compile` sessions and no plugin
+> involved — but running `~reloadOutput` alongside `~runReload` is a natural way
+> to hit it, and the casualty is usually `~runReload`, which silently stops
+> restarting on edits.
+>
+> The intended pattern for "watch + observe from another client": run **one**
+> `~runReload` watch, and from the other client **poll the one-shot
+> `reloadOutput`** (it is a non-blocking poll by design — see above). A single
+> `~` session restarts reliably on every change, and each one-shot `reloadOutput`
+> call returns whatever the app has emitted since the last poll.
 
 ### Multi-project builds
 
