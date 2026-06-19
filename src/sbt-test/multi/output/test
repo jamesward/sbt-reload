@@ -1,0 +1,15 @@
+# Start the app in subproject a under runReload (root does NOT have a main).
+> a/runReload
+> a/waitForStart
+
+# runReload must have written a's capture file with the marker.
+> a/assertCaptured
+
+# From the aggregate root, the running Compile runReload fork must be visible
+# (this is what lets bare `reloadOutput` at the root surface a subproject's output).
+> assertRunningForkVisible
+
+# The user's scenario: bare `reloadOutput` at the aggregate root. With the fix it
+# reads the running fork's capture file (subproject a) and prints OUTPUT_MARKER_A,
+# instead of "no output captured yet". Runs once because reloadOutput/aggregate=false.
+> reloadOutput

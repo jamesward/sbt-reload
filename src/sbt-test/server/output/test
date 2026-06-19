@@ -1,0 +1,15 @@
+# Start the app under runReload
+> runReload
+> waitForStart
+
+# runReload should have teed the fork's stdout to the capture file
+> checkCapture
+
+# The view-only task runs without error and prints captured output
+> reloadOutput
+
+# A second call should not error (no new output / incremental offset path)
+> reloadOutput
+
+# `~reloadOutput` must watch the capture file so it streams new output
+> checkWatchWiring

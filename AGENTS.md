@@ -23,15 +23,35 @@ discovered while debugging, so future sessions don't have to re-derive them.
 
 - Inside `Def.task { ... }`: `Keys.resolvedScoped.value` is the `ScopedKey`
   of the surrounding task (e.g. `ScopedKey(<projectRef>/Compile, runReload)`).
-- Inside a setting body whose own scope is *not* the one you want
-  (e.g. `runReload / watchOnTermination` — the setting is at scope
-  `runReload/watchOnTermination`, but you need the scope of `runReload`):
-  use `(runReload / Keys.resolvedScoped).value`. Capture it in a `val`
-  outside the lambda so the closed-over value is the runReload scope, not
-  the watchOnTermination scope.
+  `runReloadTask` uses this as the job's `spawningTask`.
+
+### **GOTCHA: `Keys.resolvedScoped` ignores any scope prefix**
+
+`(runReload / Keys.resolvedScoped).value` does **NOT** give you the `runReload`
+scope. `resolvedScoped` always resolves to the *enclosing* setting/task's own
+key, regardless of the scope you prefix it with. So inside
+`runReload / watchOnTermination := { val rs = (runReload / Keys.resolvedScoped).value; ... }`,
+`rs` is the `watchOnTermination` key, not `runReload`.
+
+This previously broke `~runReload` cancel: `watchOnTermination` tried to stop
+jobs via `service.jobs.filter(_.spawningTask == rs)`, but the job's
+`spawningTask` is `<config>/runReload` while `rs` was the `watchOnTermination`
+key, so the filter matched nothing and the fork survived the cancel. There is
+no scripted assertion on the interactive `~` cancel itself, so it slipped
+through; `src/sbt-test/server/cancel` now covers it by invoking the real
+`(Compile / runReload / watchOnTermination).value` handler and asserting the
+forked PID dies.
+
+- To stop the right job from `watchOnTermination`, capture the setting's own
+  scope (`Keys.resolvedScoped.value.scope`, which carries the correct project
+  and config axes) and match jobs by **project + config + `runReload` label**
+  (`stopReloadJobsForScope`) rather than full `ScopedKey` equality. This still
+  isolates the right project/config without depending on the task axis.
 - ScopedKey equality includes the project axis (`Select(ProjectRef(...))`)
   and the config axis (`Select(ConfigKey("compile"))`), so two projects'
-  runReload tasks compare unequal — exactly what we want.
+  runReload tasks compare unequal — exactly what we want for the
+  `runReloadTask` skip/stop path, which reuses the *same* `resolvedScoped`
+  value for both spawning and matching.
 
 ## Scripted tests
 
@@ -137,6 +157,95 @@ val fingerprint =
 
 Symptom of using `toString`: `runReload` always takes the skip path even
 after a real source change, so the fork doesn't pick up new code.
+
+## reloadOutput: capture, restart-awareness, and cross-scope reads
+
+- `runReload` tees the fork's logged output to
+  `<Compile|Test target>/reload/<config>-output.log` via `TeeLogger` and
+  records that file in a plugin-internal `ConcurrentHashMap[ScopedKey,File]`
+  (`captureFiles`) keyed by the fork's `spawningTask`.
+- `OutputReader.poll` (pure, unit-tested in `OutputReaderSuite`) does the
+  incremental, line-aligned read. It takes a per-file `ReadState(epoch,offset)`
+  and the writer's current epoch. **Restart detection is epoch-based**:
+  `runReload` bumps a per-file epoch (`outputEpochs`) the instant it truncates
+  the capture file for a new fork, so the reader resets to byte 0 even when the
+  new fork's output is already longer than the old offset. A length-only
+  truncation check (`offset > len`) misses that and drops the head of the new
+  output — the original "no output after reload" bug. (Length-shrink is kept as
+  a backstop for the truncation/epoch-bump race window.)
+
+### **GOTCHA: `reloadOutput` reads running jobs, not its own scope**
+
+`reloadOutput` does **not** read its own scope's capture file. It iterates the
+live `bgJobService.value.jobs`, filters to `runReload` jobs in its own config,
+maps each to its registered capture file, and prints. This is what lets bare
+`reloadOutput` at the aggregate root surface a *subproject's* running fork —
+the original multi-project "no output captured yet" bug came from each
+aggregated invocation reading its own (empty) scope's path.
+
+Two consequences to preserve:
+
+- `reloadOutput / aggregate := false`. Because the task already reports on every
+  running fork, letting it aggregate would print each fork's output once per
+  aggregated subproject.
+- `reloadOutput / fileInputs` is a **build-wide** glob
+  (`<root>/target ** /reload/<config>-output.log`), not the own-scope file, so
+  `~reloadOutput` streams every fork's output even when invoked from the root.
+  `src/sbt-test/multi/output` covers the cross-scope read (asserts the running
+  Compile fork is visible from the root via `bgJobService`).
+
+### **GOTCHA: don't print the "no new output" status per fork**
+
+`reloadOutputTask` iterates *every* running fork in its config, but it must only
+print **actual new output lines** per fork (prefixed by project id when more than
+one fork is running). The per-fork "no new output" / "no output captured yet"
+status from `OutputReader.poll` is deliberately **not** printed — with N running
+forks that floods the console with N identical status lines on every call, and
+under `~reloadOutput` (which re-runs on each capture-file change) every trigger
+reprints all N. The original report was a 4-project build showing
+`[login]/[www]/[mcp]/[api] reloadOutput: no new output` four times each under
+`~Test/reloadOutput`.
+
+Instead, the task tracks whether *any* fork produced new lines and, only when
+none did, emits a **single** unprefixed `reloadOutput: no new output`. So a
+manual one-shot poll still gets one confirmation line, while a streaming
+`~reloadOutput` stays quiet except for real output. `OutputReader.Result.message`
+is still produced (and unit-tested in `OutputReaderSuite`) — the plugin just
+doesn't surface it per fork anymore.
+
+### **GOTCHA (sbt limitation): two concurrent `~` watches on one server drop events**
+
+Running `~runReload` in one client and `~reloadOutput` in another (same sbt
+server) is unreliable: the first triggered rebuild works, but after that one of
+the two watch sessions stops receiving file-change events. This is an **sbt
+limitation, not a plugin bug** — it reproduces with two plain `~compile`
+sessions and zero plugin code:
+
+```
+# client 1
+sbt --jvm-client "~compile"     # started first
+# client 2
+sbt --jvm-client "~compile"     # started second
+# edit a source 3 times:
+#   client 1 (first):  1 trigger   <- goes deaf after the first rebuild
+#   client 2 (second): 3 triggers  <- keeps working
+```
+
+Root cause (from `sbt/internal/Continuous.scala`): watches are per-channel
+(`watchStates` keyed by channel), but they share a single
+`globalFileTreeRepository` in the one `State`, which `beforeCommand`/
+`afterCommand` swap in/out and stash under a single `stashedRepo` attribute key.
+With two channels the shared registration/stamp state gets disturbed after the
+first trigger and the *first-started* watch stops seeing events. Verified
+empirically: single `~runReload` catches every change; `~runReload` +
+`~reloadOutput` catches only the first; the victim is whichever `~` started
+first (usually `~runReload`).
+
+The supported pattern (documented in README) sidesteps it: run **one**
+`~runReload` and, from the other client, call the **one-shot** `reloadOutput`
+(non-blocking poll), not `~reloadOutput`. Verified: with a single `~runReload`
+session, three successive edits all triggered, and a one-shot `reloadOutput`
+after each showed the new output. Do not "fix" this by adding a second `~`.
 
 ## Verifying liveness in scripted tests
 

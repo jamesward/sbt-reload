@@ -1,0 +1,11 @@
+# Start the app under runReload (single instance)
+> runReload
+> waitForStart
+
+# Simulate pressing <enter> to cancel ~runReload. This invokes the plugin's
+# runReload / watchOnTermination handler, which must stop the forked app.
+> simulateWatchCancel
+
+# The forked process must now be dead. Before the fix it stays alive because
+# the handler's ScopedKey match doesn't equal the job's spawningTask.
+> assertStopped
