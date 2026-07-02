@@ -1,0 +1,49 @@
+# Before starting, reloadStatus should report "not running".
+> reloadStatus
+> assertNotRunning
+
+# Start the app under runReload and record its PID.
+> runReload
+> waitForStarted
+> recordPid
+
+# Now running and not paused.
+> reloadStatus
+> assertRunning
+
+# Pause runReload for this scope. In real use this is issued from a *different* sbt
+# client connected to the same server; here we invoke the same shared task, which flips
+# the plugin-global paused-scope flag.
+> reloadPause
+
+# reloadStatus should now report "running (paused)".
+> reloadStatus
+> assertRunning
+
+# Change the source so the inputs genuinely differ — without a pause this WOULD restart
+# the fork (see multi/independent-restart). Delete pid.txt so a restart would be visible
+# by pid.txt reappearing.
+> touchSource
+$ delete target/pid.txt
+
+# Invoke runReload while paused. It must keep the current fork and NOT restart, so the
+# baseline process stays alive and pid.txt is never recreated.
+> runReload
+> assertNotRestarted
+
+# Resume, then runReload again. Now the changed inputs must cause a real restart: a new
+# fork writes a new pid.txt and the original process is stopped.
+> reloadResume
+
+# reloadStatus should report "running" again (resumed).
+> reloadStatus
+> assertRunning
+
+> runReload
+> waitForStarted
+> assertPidChanged
+> assertBaselineDead
+
+# Still running after the restart.
+> reloadStatus
+> assertRunning

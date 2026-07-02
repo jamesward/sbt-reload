@@ -32,6 +32,54 @@ This will:
 3. On change: stop the running app, recompile, restart
 4. Press Enter to exit watch mode (stops the app)
 
+### Pausing and resuming from another client
+
+Because sbt 2.x runs a persistent server shared by every connected client, one client
+can pause and later resume another client's running `~runReload`. While a scope is
+paused, `runReload` invocations for that project/config keep the current fork running and
+do **not** restart it, even when sources change:
+
+```
+./sbt reloadPause         # pause Compile-scoped runReload
+./sbt Test/reloadPause     # pause Test-scoped runReload
+./sbt reloadResume        # resume it
+```
+
+This is useful when a second client (for example an AI agent) is driving edits and wants
+to make several changes without the watching `~runReload` restarting the app on each one.
+The agent calls `reloadPause`, makes its edits, then calls `reloadResume`.
+
+Semantics:
+
+- Pause/resume are scoped per project and per config, exactly like `runReload`. Issuing
+  them from an aggregate root pauses/resumes every aggregated subproject's scope.
+- While paused, source changes are recompiled but the fork is **not** restarted, so the
+  running app keeps serving old bytecode until you resume.
+- After `reloadResume`, the next `runReload` (the next `~runReload` trigger, or a manual
+  invocation) restarts the fork if its inputs changed while paused. Resuming does not
+  itself force a restart — it re-enables the normal change-driven restart.
+- Pause state is cleared automatically when the `~runReload` watch exits
+  (`watchOnTermination`) and on sbt `reload`/`exit` (`onUnload`).
+
+### Checking reloader status
+
+`reloadStatus` reports, for a scope (project + config), whether a `runReload` fork is
+currently running and whether it is paused:
+
+```
+./sbt reloadStatus        # Compile scope
+./sbt Test/reloadStatus   # Test scope
+```
+
+It prints one of:
+
+- `not running` — no `runReload` fork is alive for this scope
+- `running` — a fork is alive and not paused
+- `running (paused)` — a fork is alive but paused via `reloadPause`
+
+Like `reloadOutput` and `reloadPause`/`reloadResume`, it reads the shared sbt server
+state, so it reflects a fork or pause started by any connected client.
+
 ### Watching output from another client (e.g. an AI agent)
 
 sbt 2.x runs a persistent server that multiple clients can connect to. When one

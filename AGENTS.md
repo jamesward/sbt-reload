@@ -247,6 +247,68 @@ The supported pattern (documented in README) sidesteps it: run **one**
 session, three successive edits all triggered, and a one-shot `reloadOutput`
 after each showed the new output. Do not "fix" this by adding a second `~`.
 
+## Cross-client pause/resume (`reloadPause` / `reloadResume`)
+
+`reloadPause` / `reloadResume` let one sbt client suspend another client's
+running `~runReload`. sbt 2.x runs a single persistent server shared by every
+connected client, so any plugin-object state is shared across clients — the
+same property `reloadOutput` relies on. Pause state lives in a plugin-global
+`ConcurrentHashMap.newKeySet[String]` (`pausedScopes`): `reloadPause` adds the
+scope, `reloadResume` removes it, and `runReloadTask` checks membership before
+deciding to restart.
+
+- **Keyed by project+config, not `ScopedKey`.** Same `Keys.resolvedScoped`
+  gotcha as `watchOnTermination`: inside `reloadPause`/`reloadResume`,
+  `Keys.resolvedScoped.value` resolves to the `reloadPause`/`reloadResume` key,
+  **not** `runReload`. So the registry is keyed by a project+config string
+  (`scopeId(scope)`), and `runReloadTask` looks up `scopeId(rs.scope)` where
+  `rs` is its own `runReload` `ScopedKey`. The task axis differs but the project
+  and config axes match, so the lookup hits. Matching on full `ScopedKey` would
+  never match (task axis differs).
+- **The pause branch must not update the fingerprint.** When paused,
+  `runReloadTask` returns *before* the `lastInputs.put(rs, fingerprint)` that the
+  restart path performs. This is deliberate: it leaves `lastInputs` holding the
+  *currently-running* fork's fingerprint, so after `reloadResume` the next
+  `runReload` sees the changed inputs (compiled while paused) as a mismatch and
+  restarts. If the pause branch updated the fingerprint, resume would take the
+  skip-when-unchanged path and never pick up the edits made during the pause.
+- **Compile still happens while paused.** `runReloadTask` is a `Def.task`, so all
+  its `.value` inputs (including `fullClasspathAsJars`, which forces compile) are
+  evaluated eagerly regardless of the pause branch. Pausing therefore still
+  recompiles on each triggered `~runReload`; it only suppresses the stop/restart
+  of the fork. This is fine (and surfaces compile errors early) — just don't
+  assume pause makes `runReload` a true no-op.
+- **Cleanup.** `pausedScopes` is cleared per-scope in `watchOnTermination`
+  (`pausedScopes.remove(scopeId(termScope))`) and entirely in `onUnload`, so a
+  stale pause can't outlive the watch session or an sbt `reload`.
+
+### `reloadStatus`
+
+`reloadStatus` reports one of `not running` / `running` / `running (paused)` for its
+scope. It derives "running" from the live `bgJobService.jobs` (matched by project +
+config + `runReload` label, **not** full `ScopedKey` — same `resolvedScoped` gotcha as
+pause/resume) and "paused" from `pausedScopes.contains(scopeId(scope))`. It only reads
+shared state, so it reflects a fork/pause started by any client. The `server/pause`
+scripted test exercises all three states (the build can independently observe the
+running dimension via `bgJobService`; the paused dimension is validated behaviorally by
+`assertNotRestarted` plus the printed `reloadStatus` line).
+
+### Testing pause without an interactive `~`
+
+`src/sbt-test/server/pause` proves the semantics without running an interactive
+`~runReload` (scripted can't drive `~`), the same way `server/cancel` tests
+`watchOnTermination`: it invokes the real tasks directly.
+
+The trick for asserting "pause blocked a restart" is that pausing must be
+distinguishable from the ordinary skip-when-unchanged no-op. So the test
+**changes the inputs** (`touchSource` rewrites a `// MARKER` line, exactly like
+`multi/independent-restart`) so that *without* the pause the fork would restart.
+It then `$ delete target/pid.txt` and calls `runReload` while paused;
+`assertNotRestarted` confirms (a) the baseline PID is still alive and (b)
+`pid.txt` was **not** recreated (no new fork wrote it). After `reloadResume`, a
+final `runReload` restarts: `assertPidChanged` sees a new PID and
+`assertBaselineDead` confirms the old fork was stopped.
+
 ## Verifying liveness in scripted tests
 
 Use a PID-based liveness check rather than shutdown hooks (which may not

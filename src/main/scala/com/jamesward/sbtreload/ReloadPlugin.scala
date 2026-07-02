@@ -20,6 +20,9 @@ object ReloadPlugin extends AutoPlugin:
     val runReload = taskKey[Unit]("Stop any prior runReload process, recompile, then start the app in a forked JVM.")
     val runReloadArgs = settingKey[Seq[String]]("App arguments passed to the main method on each runReload.")
     val reloadOutput = taskKey[Unit]("View-only: print runReload fork output captured since the last call (non-blocking).")
+    val reloadPause = taskKey[Unit]("Pause runReload for this scope: while paused, runReload keeps the current fork and does not restart it.")
+    val reloadResume = taskKey[Unit]("Resume runReload for this scope after a reloadPause, re-enabling restarts on subsequent invocations.")
+    val reloadStatus = taskKey[Unit]("Report whether this scope's runReload fork is running and whether it is paused.")
 
   import autoImport.*
 
@@ -47,6 +50,19 @@ object ReloadPlugin extends AutoPlugin:
   // path-derivation mismatch.
   private val captureFiles = ConcurrentHashMap[ScopedKey[?], java.io.File]()
 
+  // Scopes (project + config) that have been paused via `reloadPause`. While a scope is
+  // present here, `runReload` invocations for that scope keep the current fork and do NOT
+  // stop/restart it — even if the inputs changed. `reloadResume` removes the scope.
+  //
+  // This lives in the plugin object (a single instance per sbt server JVM) so it is shared
+  // across all connected clients: one client can `~runReload` while another issues
+  // `reloadPause` / `reloadResume` against the same running server. It is keyed by a
+  // project+config string (see `scopeId`) rather than a full `ScopedKey`, because
+  // `Keys.resolvedScoped` inside `reloadPause`/`reloadResume` resolves to *their* own key,
+  // not `runReload` (same gotcha as `watchOnTermination`); matching on project+config
+  // still isolates the right project/config's fork.
+  private val pausedScopes = ConcurrentHashMap.newKeySet[String]()
+
   override lazy val globalSettings: Seq[Setting[?]] = Seq(
     runReloadArgs := Nil,
     onUnload := { s =>
@@ -56,6 +72,7 @@ object ReloadPlugin extends AutoPlugin:
       outputStates.clear()
       outputEpochs.clear()
       captureFiles.clear()
+      pausedScopes.clear()
       onUnload.value(s)
     },
   )
@@ -67,6 +84,9 @@ object ReloadPlugin extends AutoPlugin:
   private lazy val reloadSettings: Seq[Setting[?]] = Seq(
     runReload := Def.uncached(runReloadTask.value),
     reloadOutput := Def.uncached(reloadOutputTask.value),
+    reloadPause := Def.uncached(reloadPauseTask.value),
+    reloadResume := Def.uncached(reloadResumeTask.value),
+    reloadStatus := Def.uncached(reloadStatusTask.value),
     // `reloadOutput` reports on every running runReload fork (see reloadOutputTask),
     // so it must NOT aggregate — otherwise invoking it at an aggregate root would run
     // once per subproject and print each fork's output N times.
@@ -97,6 +117,7 @@ object ReloadPlugin extends AutoPlugin:
         clearReloadStateForScope(termScope)
         outputStates.remove(outKey)
         outputEpochs.remove(outKey)
+        pausedScopes.remove(scopeId(termScope))
         state
     },
   )
@@ -131,7 +152,13 @@ object ReloadPlugin extends AutoPlugin:
     val isRunning = service.jobs.exists(_.spawningTask == rs)
     val unchanged = Option(lastInputs.get(rs)).contains(fingerprint)
 
-    if isRunning && unchanged then
+    if pausedScopes.contains(scopeId(rs.scope)) then
+      // Paused via `reloadPause` (possibly from another client on the same sbt server).
+      // Keep the current fork as-is: do not stop, do not restart, and do NOT update the
+      // fingerprint — so that after `reloadResume` the next invocation sees the changed
+      // inputs and restarts.
+      log.info(s"runReload: paused for ${Def.showFullKey.show(rs)}; keeping current fork, not restarting")
+    else if isRunning && unchanged then
       log.debug(s"runReload: inputs unchanged for ${Def.showFullKey.show(rs)}; keeping running fork")
     else
       stopReloadJobsFor(service, rs, log)
@@ -175,6 +202,62 @@ object ReloadPlugin extends AutoPlugin:
       }
       lastInputs.put(rs, fingerprint)
     end if
+  }
+
+  /**
+   * Pause `runReload` for this task's scope (project + config). While paused, any
+   * `runReload` invocation for the same project/config is a no-op that keeps the current
+   * fork running (see `runReloadTask`). Because the paused-scope registry lives in the
+   * plugin object shared by the whole sbt server, this can be issued from a *different*
+   * client than the one running `~runReload`.
+   */
+  private def reloadPauseTask: Def.Initialize[Task[Unit]] = Def.task {
+    val log = streams.value.log
+    val scope = Keys.resolvedScoped.value.scope
+    pausedScopes.add(scopeId(scope))
+    log.info(s"runReload: paused ${configuration.value.name} for ${scopeDisplay(scope)}; changes will not restart until reloadResume")
+  }
+
+  /**
+   * Resume `runReload` for this task's scope after a `reloadPause`. Subsequent
+   * `runReload` invocations for the same project/config restart the fork again when their
+   * inputs have changed. Like `reloadPause`, this can be issued from another client.
+   */
+  private def reloadResumeTask: Def.Initialize[Task[Unit]] = Def.task {
+    val log = streams.value.log
+    val scope = Keys.resolvedScoped.value.scope
+    val was = pausedScopes.remove(scopeId(scope))
+    if was then log.info(s"runReload: resumed ${configuration.value.name} for ${scopeDisplay(scope)}")
+    else log.info(s"runReload: ${configuration.value.name} was not paused for ${scopeDisplay(scope)}")
+  }
+
+  /**
+   * Report the runReload state for this task's scope (project + config): whether a fork is
+   * currently running and, if so, whether the scope is paused. Like pause/resume this is
+   * driven by the shared plugin-object state and the live `BackgroundJobService`, so it
+   * reflects a fork started by any client on the same server.
+   *
+   * Jobs are matched by project + config + the `runReload` label (not full `ScopedKey`
+   * equality) for the same reason as `watchOnTermination`/`reloadPause`: this task's
+   * `Keys.resolvedScoped` is the `reloadStatus` key, whose task axis differs from the
+   * running job's `<config>/runReload` `spawningTask`.
+   */
+  private def reloadStatusTask: Def.Initialize[Task[Unit]] = Def.task {
+    val service = bgJobService.value
+    val log = streams.value.log
+    val scope = Keys.resolvedScoped.value.scope
+    val configName = configuration.value.name
+    val label = runReload.key.label
+    val running = service.jobs.exists { h =>
+      val s = h.spawningTask.scope
+      h.spawningTask.key.label == label && s.project == scope.project && s.config == scope.config
+    }
+    val paused = pausedScopes.contains(scopeId(scope))
+    val status =
+      if !running then "not running"
+      else if paused then "running (paused)"
+      else "running"
+    log.info(s"reloadStatus [$configName/${scopeDisplay(scope)}]: $status")
   }
 
   /**
@@ -233,6 +316,28 @@ object ReloadPlugin extends AutoPlugin:
       case Some(ref: ProjectRef) => ref.project
       case Some(other)           => other.toString
       case None                  => "?"
+
+  /**
+   * Stable identity for a runReload scope based on project + config only.
+   *
+   * `runReload`'s job `spawningTask` scope and the `reloadPause`/`reloadResume`/
+   * `watchOnTermination` settings' own scopes all share the same project and config axes
+   * (they differ only on the task axis, which `Keys.resolvedScoped` fixes to the enclosing
+   * key). Keying the paused-scope registry on project+config lets pause/resume issued
+   * against `reloadPause` match the `runReload` job for the same project/config, without
+   * depending on the task axis.
+   */
+  private def scopeId(scope: Scope): String =
+    val p = scope.project.toOption.map(_.toString).getOrElse("*")
+    val c = scope.config.toOption.map(_.name).getOrElse("*")
+    s"$p/$c"
+
+  /** Best-effort human-readable project name for log messages. */
+  private def scopeDisplay(scope: Scope): String =
+    scope.project.toOption match
+      case Some(ref: ProjectRef) => ref.project
+      case Some(other)           => other.toString
+      case None                  => "*"
 
   /** Deterministic per-(project, config) capture file shared by writer and reader. */
   private def reloadOutputFile(targetDir: java.io.File, configName: String): java.io.File =
