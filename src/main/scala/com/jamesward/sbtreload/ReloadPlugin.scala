@@ -261,28 +261,48 @@ object ReloadPlugin extends AutoPlugin:
   }
 
   /**
-   * View-only task: print, for every currently-running runReload fork in this config,
-   * the output it has emitted since the last call (non-blocking).
+   * View-only task: print the output a running runReload fork has emitted since the last
+   * call (non-blocking).
    *
-   * Reading is driven by the live `BackgroundJobService` jobs (not this task's own
-   * scope), so `reloadOutput` shows the app's output no matter which scope you invoke
-   * it from — in particular bare `reloadOutput` at the aggregate root surfaces a
-   * subproject's running fork. Output from multiple forks is prefixed with the project
-   * id. The config axis is still honored: `reloadOutput` shows Compile forks,
-   * `Test/reloadOutput` shows Test forks.
+   * Reading is driven by the live `BackgroundJobService` jobs (not this task's own task
+   * axis). Fork selection is **project-aware**:
+   *
+   *   - If the project the task is invoked in has its own running fork (e.g.
+   *     `a/reloadOutput`, or bare `reloadOutput` in a single-project build), only that
+   *     project's fork is reported. This is what stops a subproject-scoped call from
+   *     dumping every other subproject's output — the multi-project duplication bug where
+   *     a line common to N forks (a shared startup banner) showed up N times.
+   *   - Only when the invoking scope has NO fork of its own (typically an aggregate root
+   *     that just aggregates subprojects) do we fall back to reporting every running fork
+   *     in the config, so bare `reloadOutput` at the root still surfaces a subproject's
+   *     running fork.
+   *
+   * When more than one fork is reported (the aggregate-root fallback) each line is
+   * prefixed with the project id. The config axis is always honored: `reloadOutput` shows
+   * Compile forks, `Test/reloadOutput` shows Test forks.
    */
   private def reloadOutputTask: Def.Initialize[Task[Unit]] = Def.task {
     val service = bgJobService.value
     val log = streams.value.log
     val myConfig = configuration.value.name
+    // `Keys.resolvedScoped` resolves to the `reloadOutput` key itself, but its scope
+    // carries the correct project + config axes of the invocation (same property used by
+    // `watchOnTermination`/`reloadStatus`). We use its project axis to prefer this
+    // project's own fork.
+    val myProject = Keys.resolvedScoped.value.scope.project
 
-    val targets: Vector[(ScopedKey[?], java.io.File)] =
+    val allForks: Vector[(ScopedKey[?], java.io.File)] =
       service.jobs
         .filter(_.spawningTask.key.label == runReload.key.label)
         .filter(_.spawningTask.scope.config.toOption.exists(_.name == myConfig))
         .flatMap(h => Option(captureFiles.get(h.spawningTask)).map(h.spawningTask -> _))
         .toVector
         .distinct
+
+    // Project-aware scoping: prefer this project's own running fork; only fall back to
+    // every fork when this scope has none of its own (aggregate root).
+    val ownForks = allForks.filter(_._1.scope.project == myProject)
+    val targets = if ownForks.nonEmpty then ownForks else allForks
 
     if targets.isEmpty then log.info(s"reloadOutput: no running $myConfig runReload fork")
     else

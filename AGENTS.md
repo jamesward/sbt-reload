@@ -174,7 +174,7 @@ after a real source change, so the fork doesn't pick up new code.
   output — the original "no output after reload" bug. (Length-shrink is kept as
   a backstop for the truncation/epoch-bump race window.)
 
-### **GOTCHA: `reloadOutput` reads running jobs, not its own scope**
+### **GOTCHA: `reloadOutput` reads running jobs, not its own task axis (project-aware)**
 
 `reloadOutput` does **not** read its own scope's capture file. It iterates the
 live `bgJobService.value.jobs`, filters to `runReload` jobs in its own config,
@@ -183,22 +183,52 @@ maps each to its registered capture file, and prints. This is what lets bare
 the original multi-project "no output captured yet" bug came from each
 aggregated invocation reading its own (empty) scope's path.
 
-Two consequences to preserve:
+**Fork selection is project-aware** (`reloadOutputTask`), to fix the
+multi-subproject duplication bug (`src/sbt-test/multi/output-dup`): when the
+invoking project has its own running fork, only that fork is reported; the task
+falls back to reporting *every* running fork in the config **only** when the
+invoking scope has no fork of its own. Mechanics:
 
-- `reloadOutput / aggregate := false`. Because the task already reports on every
-  running fork, letting it aggregate would print each fork's output once per
-  aggregated subproject.
+```scala
+val myProject = Keys.resolvedScoped.value.scope.project   // resolvedScoped gotcha:
+                                                          // key is reloadOutput, but its
+                                                          // scope carries project+config
+val ownForks  = allForks.filter(_._1.scope.project == myProject)
+val targets   = if ownForks.nonEmpty then ownForks else allForks
+```
+
+- Why: `reloadOutput` iterating *all* forks meant `a/reloadOutput` dumped every
+  other subproject's output too, so a line common to N forks (a shared startup
+  banner) printed N times — the reported "same line 4 times" bug. Preferring the
+  invoking project's own fork makes `a/reloadOutput` show only `a`, while bare
+  `reloadOutput` at an aggregate root (which has no fork of its own) still surfaces
+  the subprojects' forks via the fallback.
+- `multi` (the project-id line prefix) is `targets.size > 1`, so the common
+  single-project case (own fork found) prints unprefixed; only the aggregate-root
+  fallback with >1 fork prefixes each line with the project id.
+
+Two more consequences to preserve:
+
+- `reloadOutput / aggregate := false`. Because the task already reports on the
+  relevant fork(s), letting it aggregate would print output once per aggregated
+  subproject.
 - `reloadOutput / fileInputs` is a **build-wide** glob
   (`<root>/target ** /reload/<config>-output.log`), not the own-scope file, so
-  `~reloadOutput` streams every fork's output even when invoked from the root.
+  `~reloadOutput` streams fork output even when invoked from the root.
   `src/sbt-test/multi/output` covers the cross-scope read (asserts the running
-  Compile fork is visible from the root via `bgJobService`).
+  Compile fork is visible from the root via `bgJobService`);
+  `src/sbt-test/multi/output-dup` covers project-aware scoping (asserts
+  `a/reloadOutput` reports only `a`, not `b`/`c`/`d`). The latter reads
+  `reloadOutput`'s own persisted task-`streams` `out` file
+  (`<buildBase>/target/out/**/<project>/streams/compile/reloadOutput/_global/streams/out`)
+  to assert on exactly what `reloadOutput` printed without capturing the console.
 
 ### **GOTCHA: don't print the "no new output" status per fork**
 
-`reloadOutputTask` iterates *every* running fork in its config, but it must only
+`reloadOutputTask` iterates the running fork(s) it reports (this project's own
+fork, or every fork in the config at an aggregate-root fallback), but it must only
 print **actual new output lines** per fork (prefixed by project id when more than
-one fork is running). The per-fork "no new output" / "no output captured yet"
+one fork is reported). The per-fork "no new output" / "no output captured yet"
 status from `OutputReader.poll` is deliberately **not** printed — with N running
 forks that floods the console with N identical status lines on every call, and
 under `~reloadOutput` (which re-runs on each capture-file change) every trigger

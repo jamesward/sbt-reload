@@ -1,0 +1,23 @@
+# Reproduction of the multi-subproject reloadOutput duplication bug.
+# Four subprojects each run a runReload fork. Every fork prints the same line
+# (SHARED_BANNER) plus a per-project unique marker. Running reloadOutput scoped
+# to ONE subproject (a) should show only that subproject's fork, but it reports
+# every running fork in the config, so the shared line shows up once per
+# subproject (4x) and the other projects' output leaks in.
+
+# Start runReload forks in all four subprojects.
+> a/runReload
+> b/runReload
+> c/runReload
+> d/runReload
+> a/waitForStart
+> b/waitForStart
+> c/waitForStart
+> d/waitForStart
+
+# Ask for subproject a's output only.
+> a/reloadOutput
+
+# Assert a/reloadOutput reported ONLY project a (SHARED_BANNER once, no b/c/d markers).
+# Fails today: SHARED_BANNER appears 4x and UNIQUE_B/C/D leak in.
+> a/assertOnlyOwnOutput

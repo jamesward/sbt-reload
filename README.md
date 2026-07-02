@@ -98,13 +98,17 @@ to see what the app printed. The capture file is truncated on each restart, and
 `reloadOutput` resets accordingly — so the first output of a freshly restarted
 fork is shown in full, even if it is longer than what the previous fork emitted.
 
-`reloadOutput` reports on **every running `runReload` fork in its config**, keyed
-off the live background-job service rather than its own scope. So in a
-multi-project build you can run `reloadOutput` from the aggregate root (or any
-project) and still see the output of whichever subproject's fork is running —
-you don't have to scope it to the subproject that happens to host the app. When
-more than one fork is running, each line is prefixed with the project id. The
-config axis is still honored: `reloadOutput` shows Compile forks,
+`reloadOutput` is **project-aware**, keyed off the live background-job service
+rather than its own task axis. When the project you invoke it in has its own
+running `runReload` fork (e.g. `myapp/reloadOutput`, or bare `reloadOutput` in a
+single-project build), it shows **only that project's** output. Only when the
+invoking scope has no fork of its own — typically an aggregate root that just
+aggregates subprojects — does it fall back to reporting *every* running fork in
+the config. So in a multi-project build you can still run `reloadOutput` from the
+aggregate root and see whichever subproject's fork is running, without a
+subproject-scoped call dumping every other subproject's output. When more than
+one fork is reported (the aggregate-root fallback), each line is prefixed with the
+project id. The config axis is always honored: `reloadOutput` shows Compile forks,
 `Test/reloadOutput` shows Test forks.
 
 When no fork has produced anything since the last call, `reloadOutput` prints a
