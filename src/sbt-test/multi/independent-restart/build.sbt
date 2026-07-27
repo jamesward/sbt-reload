@@ -10,6 +10,7 @@ val touchSource        = taskKey[Unit]("Mutate the project's source so the next 
 // MUST run every time invoked. Wrap each in Def.uncached so sbt 2.x's
 // action cache doesn't memoize them across calls.
 val markerSettings = Seq(
+  run / forkOptions := ForkOptions().withWorkingDirectory(baseDirectory.value),
   waitForStarted := Def.uncached {
     val log    = streams.value.log
     val marker = baseDirectory.value / "target" / "pid.txt"

@@ -4,6 +4,7 @@ val waitForStarted = taskKey[Unit]("Wait until the project's pid file is written
 val checkAlive     = taskKey[Unit]("Verify the recorded PID is still alive")
 
 val markerSettings = Seq(
+  run / forkOptions := ForkOptions().withWorkingDirectory(baseDirectory.value),
   waitForStarted := {
     val log    = streams.value.log
     val marker = baseDirectory.value / "target" / "pid.txt"

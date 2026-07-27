@@ -4,6 +4,7 @@ val waitForStart = taskKey[Unit]("Wait until target/started.txt is present")
 val assertCaptured = taskKey[Unit]("Assert this scope's capture file exists and contains the marker")
 
 val markerSettings = Seq(
+  run / forkOptions := ForkOptions().withWorkingDirectory(baseDirectory.value),
   waitForStart := Def.uncached {
     val marker = baseDirectory.value / "target" / "started.txt"
     var attempts = 0
