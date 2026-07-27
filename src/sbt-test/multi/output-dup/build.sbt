@@ -8,7 +8,7 @@ val waitForStart = taskKey[Unit]("Wait until target/started.txt is present")
 val assertOnlyOwnOutput = taskKey[Unit]("Assert a project-scoped reloadOutput shows only that project's fork")
 
 val markerSettings = Seq(
-  run / forkOptions := ForkOptions().withWorkingDirectory(baseDirectory.value),
+  run / forkOptions := Def.uncached(ForkOptions().withWorkingDirectory(baseDirectory.value)),
   waitForStart := Def.uncached {
     val marker = baseDirectory.value / "target" / "started.txt"
     var attempts = 0
