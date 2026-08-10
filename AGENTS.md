@@ -353,9 +353,38 @@ fire under `Process.destroyForcibly`).
 - A test task reads the PID and checks
   `ProcessHandle.of(pid).isPresent && handle.isAlive`. Linux PIDs are
   not reused for a long time, so this is reliable for short tests.
-- The forked JVM's working directory is the project's `baseDirectory`
-  (set by the default `run / forkOptions`), so `target/pid.txt` resolves
-  per-project even in multi-project builds.
+- The forked JVM's working directory is the project's `baseDirectory`, so
+  `target/pid.txt` resolves per-project even in multi-project builds. The
+  plugin sets this explicitly (`forkOpts.withWorkingDirectory(baseDirectory.value)`
+  in `runReloadTask`) — do **not** inherit `(run / forkOptions).value.workingDirectory`.
+
+### **GOTCHA: `run / forkOptions` workingDirectory drifts across sbt 2.0.x (multi-project CWD)**
+
+sbt keeps changing what `run / forkOptions` reports for `workingDirectory`,
+which repeatedly broke multi-project forks writing relative paths like
+`target/pid.txt`:
+
+- **2.0.4**: `workingDirectory = None` (forked run inherited sbt's own CWD =
+  the build root).
+- **2.0.6**: `workingDirectory = Some(ThisBuild / baseDirectory)` (the build
+  root), because `newRunnerSettings` sets `run / baseDirectory := (ThisBuild /
+  baseDirectory).value` and `runForkOptionsTask` does
+  `.withWorkingDirectory(Some(baseDirectory.value))`.
+
+Either way, a subproject's `(run / forkOptions).value.workingDirectory` points
+at the **build root**, not the subproject dir. An early fix used
+`userForkOpts.workingDirectory.orElse(Some(baseDirectory.value))`, but that only
+substitutes when sbt leaves it `None` (2.0.4) — under 2.0.6 the `orElse` never
+fires, so every subproject fork ran in the build root and its `target/pid.txt`
+landed in `<root>/target`, not `<subproject>/target`. Symptom: every
+`multi/*` scripted test fails with `<sub>/target/pid.txt never appeared` while
+single-project `server/*` tests pass (there root base == project base).
+
+Fix: **always** pin the fork to the plugin scope's own `baseDirectory.value`
+(the Compile/Test-scoped value, which is `thisProject.value.base` and is *not*
+affected by the `inTask(run)` `baseDirectory := ThisBuild/baseDirectory`
+override), regardless of what `run / forkOptions` reports. If sbt changes this
+again, this is the first place to look.
 
 ### **GOTCHA: action cache memoizes test tasks across calls**
 

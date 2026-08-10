@@ -166,14 +166,17 @@ object ReloadPlugin extends AutoPlugin:
       val mainClass = mainClassOpt.getOrElse(
         sys.error("runReload: no main class detected. Set run/mainClass.")
       )
-      // sbt 2.0.4 changed run/forkOptions to explicitly set workingDirectory=None
-      // (so forked run uses sbt's own CWD, i.e. the root build dir). We restore
-      // per-subproject CWD so relative paths like "target/pid.txt" in the forked
-      // app resolve inside the subproject's directory, not the build root.
+      // sbt changed run/forkOptions' workingDirectory across 2.0.x: 2.0.4 set it to
+      // None; 2.0.6 sets it to Some(ThisBuild / baseDirectory) (the build root) because
+      // `run / baseDirectory := (ThisBuild / baseDirectory).value`. Either way we must
+      // NOT inherit it — we pin the fork to THIS scope's (subproject's) baseDirectory so
+      // relative paths like "target/pid.txt" in the forked app resolve inside the
+      // subproject's directory, not the build root. (baseDirectory here is the
+      // Compile/Test-scoped value, unaffected by the run-scoped override.)
       val userForkOpts = (run / forkOptions).value
       val forkOpts = userForkOpts
         .withConnectInput(false)
-        .withWorkingDirectory(userForkOpts.workingDirectory.orElse(Some(baseDirectory.value)))
+        .withWorkingDirectory(baseDirectory.value)
       val copyCp = (bgRun / bgCopyClasspath).value
 
       log.info(s"runReload: starting $mainClass")
