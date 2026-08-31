@@ -277,6 +277,21 @@ The supported pattern (documented in README) sidesteps it: run **one**
 session, three successive edits all triggered, and a one-shot `reloadOutput`
 after each showed the new output. Do not "fix" this by adding a second `~`.
 
+## Forced restart (`reloadRestart`)
+
+`reloadRestart` reuses the same launch implementation as `runReload` with a
+`forceRestart` flag. It must canonicalize its enclosing resolved scope to the
+`runReload` `ScopedKey` before reading fingerprints or matching/stopping/spawning
+jobs. Registering the fork under `reloadRestart` would make `reloadStatus`,
+`reloadOutput`, watch cancellation, and single-instance-per-scope behavior miss
+it.
+
+A forced invocation compiles first, bypasses both the unchanged-fingerprint skip
+and the pause branch once, and then records the new fingerprint. It deliberately
+does **not** remove the scope from `pausedScopes`; an explicit restart while
+paused leaves subsequent automatic `runReload` invocations paused. If no fork is
+running, `reloadRestart` starts one.
+
 ## Cross-client pause/resume (`reloadPause` / `reloadResume`)
 
 `reloadPause` / `reloadResume` let one sbt client suspend another client's
@@ -298,10 +313,15 @@ deciding to restart.
 - **The pause branch must not update the fingerprint.** When paused,
   `runReloadTask` returns *before* the `lastInputs.put(rs, fingerprint)` that the
   restart path performs. This is deliberate: it leaves `lastInputs` holding the
-  *currently-running* fork's fingerprint, so after `reloadResume` the next
-  `runReload` sees the changed inputs (compiled while paused) as a mismatch and
-  restarts. If the pause branch updated the fingerprint, resume would take the
-  skip-when-unchanged path and never pick up the edits made during the pause.
+  *currently-running* fork's fingerprint, so `reloadResume` can immediately invoke
+  normal `runReload` reconciliation and detect whether inputs changed. If the pause
+  branch updated the fingerprint, resume would take the skip-when-unchanged path and
+  never pick up edits made during the pause.
+- **Resume only reconciles an existing fork.** `reloadResumeTask` removes the pause,
+  checks for a live canonical `runReload` job in the same project/config, and dynamically
+  evaluates `runReloadTask(forceRestart = false)` only when one exists. This gives
+  changed-input restart and unchanged-input no-op semantics without unexpectedly starting
+  an app when a scope was paused before its first `runReload`.
 - **Compile still happens while paused.** `runReloadTask` is a `Def.task`, so all
   its `.value` inputs (including `fullClasspathAsJars`, which forces compile) are
   evaluated eagerly regardless of the pause branch. Pausing therefore still
@@ -335,9 +355,10 @@ distinguishable from the ordinary skip-when-unchanged no-op. So the test
 `multi/independent-restart`) so that *without* the pause the fork would restart.
 It then `$ delete target/pid.txt` and calls `runReload` while paused;
 `assertNotRestarted` confirms (a) the baseline PID is still alive and (b)
-`pid.txt` was **not** recreated (no new fork wrote it). After `reloadResume`, a
-final `runReload` restarts: `assertPidChanged` sees a new PID and
-`assertBaselineDead` confirms the old fork was stopped.
+`pid.txt` was **not** recreated (no new fork wrote it). `reloadResume` then
+immediately reconciles the changed fingerprint: `assertPidChanged` sees a new PID
+and `assertBaselineDead` confirms the old fork was stopped. The same fixture first
+pauses/resumes without any running fork and asserts that resume does not start one.
 
 ## Verifying liveness in scripted tests
 

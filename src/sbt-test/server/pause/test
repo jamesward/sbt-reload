@@ -2,6 +2,11 @@
 > reloadStatus
 > assertNotRunning
 
+# Pausing and resuming a scope with no fork must not start an app.
+> reloadPause
+> reloadResume
+> assertNotRunning
+
 # Start the app under runReload and record its PID.
 > runReload
 > waitForStarted
@@ -31,19 +36,13 @@ $ delete target/pid.txt
 > runReload
 > assertNotRestarted
 
-# Resume, then runReload again. Now the changed inputs must cause a real restart: a new
-# fork writes a new pid.txt and the original process is stopped.
+# Resume immediately reconciles the changed inputs. It must restart the running fork
+# before returning control; no separate runReload invocation is required.
 > reloadResume
-
-# reloadStatus should report "running" again (resumed).
-> reloadStatus
-> assertRunning
-
-> runReload
 > waitForStarted
 > assertPidChanged
 > assertBaselineDead
 
-# Still running after the restart.
+# reloadStatus should report "running" again after reconciliation.
 > reloadStatus
 > assertRunning

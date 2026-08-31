@@ -2,7 +2,12 @@
 > runReload
 > waitForFile
 
-# Simulate a restart
+# A forced restart must bypass both the unchanged-input skip and pause for this
+# explicit invocation, while leaving the scope paused afterward.
+> reloadPause
 $ delete target/server-started.txt
-> runReload
+> reloadRestart
 > waitForFile
+> assertCanonicalJobIdentity
+> reloadStatus
+> reloadResume

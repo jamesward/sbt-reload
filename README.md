@@ -1,5 +1,7 @@
 # sbt-reload
 
+[![javadocs.dev](https://www.javadocs.dev/com.jamesward/sbt-reload_sbt2_3/badge.svg)](https://www.javadocs.dev/com.jamesward/sbt-reload_sbt2_3/latest)
+
 An sbt 2.x plugin that auto-restarts your Scala application on source changes. Like [sbt-revolver](https://github.com/spray/sbt-revolver), but built on sbt 2.x primitives.
 
 ## Install
@@ -32,6 +34,24 @@ This will:
 3. On change: stop the running app, recompile, restart
 4. Press Enter to exit watch mode (stops the app)
 
+### Forced restart
+
+`runReload` normally keeps a healthy fork when its classpath, main class, and
+arguments are unchanged. To explicitly replace the fork regardless of that
+fingerprint, use:
+
+```
+./sbt reloadRestart
+./sbt Test/reloadRestart   # Test-scoped main
+```
+
+`reloadRestart` compiles first, then stops and starts the app only if compilation
+succeeds. If no fork is running, it starts one. It also works while the scope is
+paused, overriding the pause for that one explicit restart while leaving the
+scope paused afterward. The replacement is still registered as the scope's
+canonical `runReload` job, so `reloadStatus`, `reloadOutput`, watch cancellation,
+and project/config isolation continue to work normally.
+
 ### Pausing and resuming from another client
 
 Because sbt 2.x runs a persistent server shared by every connected client, one client
@@ -55,9 +75,9 @@ Semantics:
   them from an aggregate root pauses/resumes every aggregated subproject's scope.
 - While paused, source changes are recompiled but the fork is **not** restarted, so the
   running app keeps serving old bytecode until you resume.
-- After `reloadResume`, the next `runReload` (the next `~runReload` trigger, or a manual
-  invocation) restarts the fork if its inputs changed while paused. Resuming does not
-  itself force a restart — it re-enables the normal change-driven restart.
+- `reloadResume` immediately reconciles an existing fork using the normal input
+  fingerprint: changed inputs restart before the task returns; unchanged inputs keep the
+  current fork. A paused scope with no running fork is only resumed — it is not started.
 - Pause state is cleared automatically when the `~runReload` watch exits
   (`watchOnTermination`) and on sbt `reload`/`exit` (`onUnload`).
 

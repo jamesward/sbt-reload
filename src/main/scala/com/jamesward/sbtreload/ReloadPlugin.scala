@@ -18,10 +18,11 @@ object ReloadPlugin extends AutoPlugin:
 
   object autoImport:
     val runReload = taskKey[Unit]("Stop any prior runReload process, recompile, then start the app in a forked JVM.")
+    val reloadRestart = taskKey[Unit]("Force runReload to recompile and restart this scope's app, even when its fingerprint is unchanged.")
     val runReloadArgs = settingKey[Seq[String]]("App arguments passed to the main method on each runReload.")
     val reloadOutput = taskKey[Unit]("View-only: print runReload fork output captured since the last call (non-blocking).")
     val reloadPause = taskKey[Unit]("Pause runReload for this scope: while paused, runReload keeps the current fork and does not restart it.")
-    val reloadResume = taskKey[Unit]("Resume runReload for this scope after a reloadPause, re-enabling restarts on subsequent invocations.")
+    val reloadResume = taskKey[Unit]("Resume runReload after a reloadPause and immediately reconcile changed inputs for an existing fork.")
     val reloadStatus = taskKey[Unit]("Report whether this scope's runReload fork is running and whether it is paused.")
 
   import autoImport.*
@@ -82,7 +83,8 @@ object ReloadPlugin extends AutoPlugin:
     inConfig(Test)(reloadSettings)
 
   private lazy val reloadSettings: Seq[Setting[?]] = Seq(
-    runReload := Def.uncached(runReloadTask.value),
+    runReload := Def.uncached(runReloadTask(forceRestart = false).value),
+    reloadRestart := Def.uncached(runReloadTask(forceRestart = true).value),
     reloadOutput := Def.uncached(reloadOutputTask.value),
     reloadPause := Def.uncached(reloadPauseTask.value),
     reloadResume := Def.uncached(reloadResumeTask.value),
@@ -122,12 +124,16 @@ object ReloadPlugin extends AutoPlugin:
     },
   )
 
-  private def runReloadTask: Def.Initialize[Task[Unit]] = Def.task {
+  private def runReloadTask(forceRestart: Boolean): Def.Initialize[Task[Unit]] = Def.task {
     val service = bgJobService.value
     val log = streams.value.log
     val converter = fileConverter.value
     val st = state.value
-    val rs = Keys.resolvedScoped.value
+    val enclosing = Keys.resolvedScoped.value
+    // reloadRestart must manage the same background job and state as runReload.
+    // Its own resolvedScoped has a different task axis, so canonicalize that axis
+    // before matching/stopping/spawning jobs or reading/writing fingerprints.
+    val rs = Def.ScopedKey(enclosing.scope, runReload.key)
 
     // Compile first (via classpath dependencies). If compile fails,
     // this task aborts and the running fork keeps going.
@@ -152,15 +158,17 @@ object ReloadPlugin extends AutoPlugin:
     val isRunning = service.jobs.exists(_.spawningTask == rs)
     val unchanged = Option(lastInputs.get(rs)).contains(fingerprint)
 
-    if pausedScopes.contains(scopeId(rs.scope)) then
+    if !forceRestart && pausedScopes.contains(scopeId(rs.scope)) then
       // Paused via `reloadPause` (possibly from another client on the same sbt server).
       // Keep the current fork as-is: do not stop, do not restart, and do NOT update the
-      // fingerprint — so that after `reloadResume` the next invocation sees the changed
-      // inputs and restarts.
+      // fingerprint — so reloadResume's immediate reconciliation sees the changed
+      // inputs and restarts. An explicit reloadRestart bypasses this branch once without
+      // clearing the paused state.
       log.info(s"runReload: paused for ${Def.showFullKey.show(rs)}; keeping current fork, not restarting")
-    else if isRunning && unchanged then
+    else if !forceRestart && isRunning && unchanged then
       log.debug(s"runReload: inputs unchanged for ${Def.showFullKey.show(rs)}; keeping running fork")
     else
+      if forceRestart then log.info(s"runReload: forced restart for ${Def.showFullKey.show(rs)}")
       stopReloadJobsFor(service, rs, log)
 
       val mainClass = mainClassOpt.getOrElse(
@@ -229,16 +237,31 @@ object ReloadPlugin extends AutoPlugin:
   }
 
   /**
-   * Resume `runReload` for this task's scope after a `reloadPause`. Subsequent
-   * `runReload` invocations for the same project/config restart the fork again when their
-   * inputs have changed. Like `reloadPause`, this can be issued from another client.
+   * Resume `runReload` for this task's scope after a `reloadPause`. If this scope
+   * was paused and already has a running fork, immediately re-evaluate normal
+   * fingerprint-aware `runReload`: changed inputs restart now, unchanged inputs
+   * keep the fork. A paused scope with no fork is merely resumed and is not started.
    */
-  private def reloadResumeTask: Def.Initialize[Task[Unit]] = Def.task {
+  private def reloadResumeTask: Def.Initialize[Task[Unit]] = Def.taskDyn {
+    val service = bgJobService.value
     val log = streams.value.log
     val scope = Keys.resolvedScoped.value.scope
-    val was = pausedScopes.remove(scopeId(scope))
-    if was then log.info(s"runReload: resumed ${configuration.value.name} for ${scopeDisplay(scope)}")
-    else log.info(s"runReload: ${configuration.value.name} was not paused for ${scopeDisplay(scope)}")
+    val wasPaused = pausedScopes.remove(scopeId(scope))
+    val wasRunning = service.jobs.exists { h =>
+      val s = h.spawningTask.scope
+      h.spawningTask.key.label == runReload.key.label &&
+        s.project == scope.project && s.config == scope.config
+    }
+
+    if wasPaused then
+      log.info(s"runReload: resumed ${configuration.value.name} for ${scopeDisplay(scope)}")
+    else
+      log.info(s"runReload: ${configuration.value.name} was not paused for ${scopeDisplay(scope)}")
+
+    if wasPaused && wasRunning then
+      log.info(s"runReload: reconciling inputs after resume for ${scopeDisplay(scope)}")
+      runReloadTask(forceRestart = false)
+    else Def.task(())
   }
 
   /**
