@@ -35,4 +35,4 @@ Global / mcpPort := 5109
 // SkillsJars: extract agent Skills with `./sbt extractSkillsJars`
 skillsJarsOutputDir := Some(file(".kiro/skills"))
 
-libraryDependencies += "com.jamesward" % "skills" % "0.0.10" % Skills
+libraryDependencies += "com.jamesward" % "skills" % "0.0.11" % Skills
