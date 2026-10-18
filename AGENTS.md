@@ -65,14 +65,14 @@ forked PID dies.
   s"-Dplugin.version=${version.value}"` and `scriptedBufferLog := false`.
   The latter is essential — without it, the per-test sbt's stdout is
   buffered and only printed on failure, which makes debugging painful.
-- Run all tests: `./sbt scripted`. Run one: `./sbt 'scripted multi/subprojects'`.
+- Run all tests: `./sbta scripted`. Run one: `./sbta 'scripted multi/subprojects'`.
   Pass marker is `[info] + group/test`, fail marker is `[error] x group/test`.
 - Scripted copies the test directory into a fresh temp dir
   (`/tmp/sbt_<hash>/`) per run, so no clean step is needed inside the test.
 
 ### **GOTCHA: stale plugin jar in coursier cache**
 
-When iterating on the plugin's source, `./sbt scripted` *can silently use a
+When iterating on the plugin's source, `./sbta scripted` *can silently use a
 previously-published version of the plugin from Maven Central* instead of
 the freshly published-local jar. Symptoms:
 
@@ -436,6 +436,6 @@ logs from the first call appear; later assertions fail with stale state
 
 ## Agent tooling
 
-- Follow the `zen-of-projects` Skill (extract with `./sbt extractSkillsJars` into the gitignored `.kiro/skills/`); this file records only project-specific facts and exceptions.
-- MCP server `sbt-mcp-sbt-reload` (sbt-mcp) listens on `http://127.0.0.1:5109/`. Kiro uses the HTTP entry in `.kiro/settings/mcp.json`; start sbt first. Claude Code uses `.mcp.json`, which runs `.claude/sbt-mcp-stdio.sh` (approved in `.claude/settings.json`). That stdio bridge starts a foreground sbt in cloud sessions (`CLAUDE_CODE_REMOTE=true`), and locally only connects to an sbt you already started. Its tools are deferred: load them with ToolSearch (search `sbt-mcp-sbt-reload`). Diagnostics go to `/tmp/sbt-mcp-stdio.log` and `/tmp/sbt-mcp-server.log`.
+- Follow the `zen-of-projects` Skill (extract with `./sbta extractSkillsJars` into the gitignored `.kiro/skills/`); this file records only project-specific facts and exceptions.
+- MCP server `sbta` (this build's `./sbta --mcp`, configured in `.mcp.json` and `.kiro/settings/mcp.json`, approved in `.claude/settings.json`): use it for all sbt work: `compile`, `test` (`full` for all), `run`, `check` after editing Scala 3 sources, `glob-search` / `inspect` / `symbol-location` for symbols, `sbt-task` for any other command. Its tools are deferred in Claude Code: load them with ToolSearch (search `sbta`). If it's unavailable, say so and use `./sbta <command>`. Logs: `project/target/sbta/mcp.log`.
 - Maintenance routine: `.factory/MAINTENANCE.md` (weekly), following the `zen-of-projects` Skill.

@@ -19,13 +19,13 @@ No other configuration needed — the plugin auto-activates on all JVM projects.
 ### Watch mode
 
 ```
-./sbt ~runReload
+./sbta ~runReload
 ```
 
 For a `Test`-scoped main:
 
 ```
-./sbt ~Test/runReload
+./sbta ~Test/runReload
 ```
 
 This will:
@@ -41,8 +41,8 @@ arguments are unchanged. To explicitly replace the fork regardless of that
 fingerprint, use:
 
 ```
-./sbt reloadRestart
-./sbt Test/reloadRestart   # Test-scoped main
+./sbta reloadRestart
+./sbta Test/reloadRestart   # Test-scoped main
 ```
 
 `reloadRestart` compiles first, then stops and starts the app only if compilation
@@ -60,9 +60,9 @@ paused, `runReload` invocations for that project/config keep the current fork ru
 do **not** restart it, even when sources change:
 
 ```
-./sbt reloadPause         # pause Compile-scoped runReload
-./sbt Test/reloadPause     # pause Test-scoped runReload
-./sbt reloadResume        # resume it
+./sbta reloadPause         # pause Compile-scoped runReload
+./sbta Test/reloadPause     # pause Test-scoped runReload
+./sbta reloadResume        # resume it
 ```
 
 This is useful when a second client (for example an AI agent) is driving edits and wants
@@ -87,8 +87,8 @@ Semantics:
 currently running and whether it is paused:
 
 ```
-./sbt reloadStatus        # Compile scope
-./sbt Test/reloadStatus   # Test scope
+./sbta reloadStatus        # Compile scope
+./sbta Test/reloadStatus   # Test scope
 ```
 
 It prints one of:
@@ -107,8 +107,8 @@ client runs `~runReload`, its forked app's output is also captured to a
 per-config file so a *different* client can view it read-only:
 
 ```
-./sbt reloadOutput        # Compile-scoped runReload output
-./sbt Test/reloadOutput   # Test-scoped runReload output
+./sbta reloadOutput        # Compile-scoped runReload output
+./sbta Test/reloadOutput   # Test-scoped runReload output
 ```
 
 `reloadOutput` prints whatever the running app has emitted since the last call

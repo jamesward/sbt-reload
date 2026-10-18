@@ -15,4 +15,4 @@ jobs:
         java-version: 25
         cache: 'sbt'
 
-    - run: ./sbt 'compile; scripted'
+    - run: ./sbta 'compile; scripted'
