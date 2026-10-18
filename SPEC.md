@@ -11,13 +11,13 @@ https://github.com/jamesward/javadoccentral/blob/master/build.sbt
 
 Initially there probably isn't anything ZIO specific in this plugin but some future ZIO specific functionality may be added (like keeping testcontainers running and Play Framework like compile errors in web UI)
 
-Users who add the plugin should only need to run `./sbt Test/runReload` to have the auto-restart for the server process. While rare, we should also support the main scoped reload (with main in src/main/scala) via `./sbt runReload`
+Users who add the plugin should only need to run `./sbta Test/runReload` to have the auto-restart for the server process. While rare, we should also support the main scoped reload (with main in src/main/scala) via `./sbta runReload`
 
 ## Open Questions
 
 ### 1. Tilde or no tilde?
 
-This is the biggest design question. The line above says `./sbt Test/runReload` should "have the auto-restart". Two readings:
+This is the biggest design question. The line above says `./sbta Test/runReload` should "have the auto-restart". Two readings:
 
 - **(a) One-shot + sbt's `~`.** `runReload` is a one-shot "stop existing, recompile, start in background" task. The user types `~Test/runReload` to enter the watch loop. This is sbt-revolver's model (`reStart` + `~reStart`). Composes cleanly with sbt's existing `~` machinery, scopes correctly for `Test/` vs `Compile/`, follows the convention users coming from sbt-revolver will expect.
 - **(b) Watch baked in.** `runReload` itself enters the watch loop — typing `Test/runReload` (no tilde) starts the app and watches sources until the user hits Enter. Doable but awkward in sbt 2.x: a Command can't be config-scoped (`Test/runReload` is task syntax), so the implementation has to either push `~ Test/runReloadOnce` onto the state from the task, or use a pair (task + command alias) with sharp edges.

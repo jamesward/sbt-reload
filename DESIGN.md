@@ -56,13 +56,13 @@ No `enablePlugins(...)` needed — the plugin auto-triggers on every JVM project
 For a `Test`-scoped main (the primary use case):
 
 ```
-$ ./sbt "~Test/runReload"
+$ ./sbta "~Test/runReload"
 ```
 
 For a `Compile`-scoped main:
 
 ```
-$ ./sbt "~runReload"
+$ ./sbta "~runReload"
 ```
 
 Behavior:
@@ -81,7 +81,7 @@ Behavior:
 
 ### 3.3 Without `~`
 
-Plain `./sbt Test/runReload` is supported but rare:
+Plain `./sbta Test/runReload` is supported but rare:
 
 - Stops any prior `runReload`-spawned job (per the single-instance rule, §5.3).
 - Forks and starts the app.
@@ -409,7 +409,7 @@ Three layers, in order of fastest → slowest (matching the test-onion principle
 ## 9. Lifecycle walkthrough
 
 To make the moving pieces concrete, here is what happens for
-`./sbt "~Test/runReload"` in a single-project build:
+`./sbta "~Test/runReload"` in a single-project build:
 
 ```
 sbt boot
