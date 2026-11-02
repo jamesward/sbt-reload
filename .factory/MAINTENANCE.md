@@ -7,6 +7,11 @@ every finding it lists needs a link to the PR or issue you opened or updated for
 repo (`jamesward/skills`, `jamesward/projects`, or a managed tool's repo), attached with `add_repo`.
 "Not filed" isn't an allowed outcome; if filing fails, quote the error. Do it before merging.
 
+Merging the rolling PR doesn't end the run either: unless the run stopped, step 9 ("Work on open
+issues") comes next, also when the rolling PR had no changes. The final report needs an "Issues"
+line: each issue you worked on with its PR or comment, or "none eligible" with why (no open issues,
+or each one's reason for being skipped).
+
 Whenever a step says to stop, or the run can't finish: revert your uncommitted edits
 (`git checkout -- .`), don't push a branch or open a PR, and end with a report that quotes what
 failed. A cloud session's Stop hook asks you to commit uncommitted changes; don't commit unvalidated
